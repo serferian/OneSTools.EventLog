@@ -64,7 +64,7 @@ namespace OneSTools.EventLog.Exporter.Manager
                     foreach (var template in _templates)
                         if (Regex.IsMatch(name, template.Mask))
                         {
-                            var dataBaseName = template.Template.Replace("[IBNAME]", name);
+                            var dataBaseName = template.Template.Replace("[IBNAME]", name.Replace("-", "_"));
                             items.Add(elPath, (name, dataBaseName));
 
                             break;
