@@ -12,7 +12,7 @@ using Newtonsoft.Json.Linq;
 
 namespace OneSTools.EventLog.Exporter.Core.ClickHouse
 {
-    public class ClickHouseStorage : IDisposable
+    public class ClickHouseStorage : IEventLogStorage
     {
         private const string TableName = "EventLogItems";
         private readonly ILogger<ClickHouseStorage> _logger;
@@ -312,6 +312,8 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                     if (value.Type == JTokenType.Object)
                     {
                         fields = value.ToObject<Dictionary<string, object>>();
+                        if (_logger != null)
+                            _logger.LogDebug("{0} fields: {1}", fields.Count, fields);
                         return true;
                     }
                 }
