@@ -68,12 +68,10 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
 
         private async Task CreateEventLogItemsDatabaseAsync(CancellationToken cancellationToken = default)
         {
-            var commandDbText = string.Format(@"CREATE DATABASE IF NOT EXISTS {0}", _databaseName);
-            await using (var cmdDb = _connection.CreateCommand())
-            {
-                cmdDb.CommandText = commandDbText;
-                await cmdDb.ExecuteNonQueryAsync(cancellationToken);
-            }
+            var commandDbText = $@"CREATE DATABASE IF NOT EXISTS {_databaseName}";
+            await using var cmdDb = _connection.CreateCommand();
+            cmdDb.CommandText = commandDbText;
+            await cmdDb.ExecuteNonQueryAsync(cancellationToken);
             await _connection.ChangeDatabaseAsync(_databaseName, cancellationToken);
         }
 
@@ -86,9 +84,7 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
 
             foreach (var item in entities)
             {
-                string tableName;
-                Dictionary<string, object> fields;
-                if (TryParseDynamicTable(item.Comment, out tableName, out fields))
+                if (TryParseDynamicTable(item.Comment, out string tableName, out Dictionary<string, object> fields))
                 {
                     // Добавим служебные поля
                     fields["_event_id"] = item.Id;
@@ -106,55 +102,51 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
             // Старый пайплайн для "обычных" эвентов
             if (defaultEvents.Count > 0)
             {
-                using (var copy = new ClickHouseBulkCopy(_connection)
+                using var copy = new ClickHouseBulkCopy(_connection)
                 {
                     DestinationTableName = TableName,
                     BatchSize = defaultEvents.Count
-                })
+                };
+
+                var data = defaultEvents.Select(ev => new object[]
                 {
+                    ev.FileName ?? "",
+                    ev.EndPosition,
+                    ev.LgfEndPosition,
+                    ev.Id,
+                    ev.DateTime,
+                    ev.TransactionStatus ?? "",
+                    ev.TransactionDateTime == DateTime.MinValue ? new DateTime(1970, 1, 1) : ev.TransactionDateTime,
+                    ev.TransactionNumber,
+                    ev.UserUuid ?? "",
+                    ev.User ?? "",
+                    ev.Computer ?? "",
+                    ev.Application ?? "",
+                    ev.Connection,
+                    ev.Event ?? "",
+                    ev.Severity ?? "",
+                    ev.Comment ?? "",
+                    ev.MetadataUuid ?? "",
+                    ev.Metadata ?? "",
+                    ev.Data ?? "",
+                    ev.DataPresentation ?? "",
+                    ev.Server ?? "",
+                    ev.MainPort,
+                    ev.AddPort,
+                    ev.Session
+                }).AsEnumerable();
 
-                    var data = defaultEvents.Select(ev => new object[]
-                    {
-                        ev.FileName ?? "",
-                        ev.EndPosition,
-                        ev.LgfEndPosition,
-                        ev.Id,
-                        ev.DateTime,
-                        ev.TransactionStatus ?? "",
-                        ev.TransactionDateTime == DateTime.MinValue ? new DateTime(1970, 1, 1) : ev.TransactionDateTime,
-                        ev.TransactionNumber,
-                        ev.UserUuid ?? "",
-                        ev.User ?? "",
-                        ev.Computer ?? "",
-                        ev.Application ?? "",
-                        ev.Connection,
-                        ev.Event ?? "",
-                        ev.Severity ?? "",
-                        ev.Comment ?? "",
-                        ev.MetadataUuid ?? "",
-                        ev.Metadata ?? "",
-                        ev.Data ?? "",
-                        ev.DataPresentation ?? "",
-                        ev.Server ?? "",
-                        ev.MainPort,
-                        ev.AddPort,
-                        ev.Session
-                    }).AsEnumerable();
-
-                    try
-                    {
-                        await copy.WriteToServerAsync(data, cancellationToken);
-                    }
-                    catch (Exception ex)
-                    {
-                        if (_logger != null)
-                            _logger.LogError(ex, "Failed to write data to " + _databaseName);
-                        throw;
-                    }
-
-                    if (_logger != null)
-                        _logger.LogDebug(defaultEvents.Count + " items were being written to " + _databaseName);
+                try
+                {
+                    await copy.WriteToServerAsync(data, cancellationToken);
                 }
+                catch (Exception ex)
+                {
+                    _logger?.LogError(ex, $"Failed to write data to {_databaseName}");
+                    throw;
+                }
+
+                _logger?.LogDebug($"{defaultEvents.Count} items were being written to {_databaseName}");
             }
         }
 
@@ -176,6 +168,7 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                     var value = props[0].Value;
                     if (value.Type != JTokenType.Object) return false;
 
+                    // Собираем ключи-значения для будущей строки
                     fields = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
                     foreach (var prop in ((JObject)value).Properties())
                     {
@@ -203,7 +196,7 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                 case JTokenType.Date: return t.Value<DateTime>();
                 case JTokenType.Null: return null;
                 case JTokenType.Undefined: return null;
-                default: return t.ToString(Formatting.None);
+                default: return t.ToString(Formatting.None); // Объекты и массивы — сериализуем в строку
             }
         }
 
@@ -212,8 +205,7 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
         {
             lock (_columnsLock)
             {
-                HashSet<string> set;
-                if (!_dynamicTableColumns.TryGetValue(tableName, out set))
+                if (!_dynamicTableColumns.TryGetValue(tableName, out var set))
                 {
                     set = new HashSet<string>(fields.Keys, StringComparer.OrdinalIgnoreCase);
                     _dynamicTableColumns[tableName] = set;
@@ -235,64 +227,55 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
             foreach (var f in fields)
             {
                 if (f.Key == "_event_id" || f.Key == "_event_stamp") continue;
-                columnsSql.Add("`" + f.Key + "` " + InferClickhouseType(f.Value));
+                columnsSql.Add($"`{f.Key}` {InferClickhouseType(f.Value)}");
             }
 
-            var create = "CREATE TABLE IF NOT EXISTS `" + tableName + "` (" + string.Join(", ", columnsSql) + ") ENGINE = MergeTree() ORDER BY _event_stamp";
+            var create = $@"CREATE TABLE IF NOT EXISTS `{tableName}` ({string.Join(", ", columnsSql)}) ENGINE = MergeTree() ORDER BY _event_stamp";
             try
             {
-                await using (var cmd = _connection.CreateCommand())
-                {
-                    cmd.CommandText = create;
-                    await cmd.ExecuteNonQueryAsync(cancellationToken);
-                }
+                await using var cmd = _connection.CreateCommand();
+                cmd.CommandText = create;
+                await cmd.ExecuteNonQueryAsync(cancellationToken);
             }
             catch (Exception e)
             {
-                if (_logger != null)
-                    _logger.LogError(e, "Failed to create dynamic table `" + tableName + "`");
+                _logger?.LogError(e, $"Failed to create dynamic table `{tableName}`");
             }
 
+            // ALTER TABLE ADD COLUMN для каждого нового поля, если надо
             HashSet<string> actualColumns = await GetActualColumnsAsync(tableName, cancellationToken);
 
             foreach (var f in fields)
             {
-                if (!actualColumns.Contains(f.Key))
+                if (!actualColumns.Contains(f.Key, StringComparer.OrdinalIgnoreCase))
                 {
-                    var alter = "ALTER TABLE `" + tableName + "` ADD COLUMN IF NOT EXISTS `" + f.Key + "` " + InferClickhouseType(f.Value);
+                    var alter = $"ALTER TABLE `{tableName}` ADD COLUMN IF NOT EXISTS `{f.Key}` {InferClickhouseType(f.Value)}";
                     try
                     {
-                        await using (var cmd = _connection.CreateCommand())
-                        {
-                            cmd.CommandText = alter;
-                            await cmd.ExecuteNonQueryAsync(cancellationToken);
-                        }
+                        await using var cmd = _connection.CreateCommand();
+                        cmd.CommandText = alter;
+                        await cmd.ExecuteNonQueryAsync(cancellationToken);
                     }
                     catch (Exception ex)
                     {
-                        if (_logger != null)
-                            _logger.LogError(ex, "Failed to ALTER TABLE `" + tableName + "` ADD COLUMN `" + f.Key + "`");
+                        _logger?.LogError(ex, $"Failed to ALTER TABLE `{tableName}` ADD COLUMN `{f.Key}`");
                     }
                 }
             }
         }
 
-        // Получаем набор существующих колонок для таблицы
+        // Получаем набор существующих колонок для таблицы (через system.columns)
         private async Task<HashSet<string>> GetActualColumnsAsync(string tableName, CancellationToken cancellationToken)
         {
             var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            var sql = "SELECT name FROM system.columns WHERE database = '" + _databaseName + "' AND table = '" + tableName + "'";
-            await using (var cmd = _connection.CreateCommand())
+            var sql = $"SELECT name FROM system.columns WHERE database = '{_databaseName}' AND table = '{tableName}'";
+            await using var cmd = _connection.CreateCommand();
+            cmd.CommandText = sql;
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
             {
-                cmd.CommandText = sql;
-                await using (var reader = await cmd.ExecuteReaderAsync(cancellationToken))
-                {
-                    while (await reader.ReadAsync(cancellationToken))
-                    {
-                        result.Add(reader.GetString(0));
-                    }
-                }
+                result.Add(reader.GetString(0));
             }
             return result;
         }
@@ -317,30 +300,27 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
         private async Task InsertIntoDynamicTableAsync(string tableName, Dictionary<string, object> fields, CancellationToken cancellationToken)
         {
             var columns = fields.Keys.ToArray();
-            var parameters = columns.Select((c, i) => "@p" + i).ToArray();
-            var sql = "INSERT INTO `" + tableName + "`(" + string.Join(",", columns.Select(c => "`" + c + "`")) + ") VALUES(" + string.Join(",", parameters) + ")";
+            var parameters = columns.Select((c, i) => $"@p{i}").ToArray();
+            var sql = $"INSERT INTO `{tableName}`({string.Join(",", columns.Select(c => $"`{c}`"))}) VALUES({string.Join(",", parameters)})";
 
-            await using (var cmd = _connection.CreateCommand())
+            await using var cmd = _connection.CreateCommand();
+            cmd.CommandText = sql;
+            for (int i = 0; i < columns.Length; ++i)
             {
-                cmd.CommandText = sql;
-                for (int i = 0; i < columns.Length; ++i)
+                var val = fields[columns[i]] ?? DBNull.Value;
+                cmd.Parameters.Add(new ClickHouseDbParameter
                 {
-                    var val = fields[columns[i]] ?? DBNull.Value;
-                    cmd.Parameters.Add(new ClickHouseDbParameter
-                    {
-                        ParameterName = "p" + i,
-                        Value = val
-                    });
-                }
-                try
-                {
-                    await cmd.ExecuteNonQueryAsync(cancellationToken);
-                }
-                catch (Exception e)
-                {
-                    if (_logger != null)
-                        _logger.LogError(e, "Failed to insert row into dynamic table `" + tableName + "`");
-                }
+                    ParameterName = $"p{i}",
+                    Value = val
+                });
+            }
+            try
+            {
+                await cmd.ExecuteNonQueryAsync(cancellationToken);
+            }
+            catch (Exception e)
+            {
+                _logger?.LogError(e, $"Failed to insert row into dynamic table `{tableName}`");
             }
         }
 
@@ -349,25 +329,21 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
             await CreateConnectionAsync(cancellationToken);
 
             var commandText =
-                "SELECT TOP 1 FileName, EndPosition, LgfEndPosition, Id FROM " + TableName + " ORDER BY DateTime DESC, EndPosition DESC";
+                $"SELECT TOP 1 FileName, EndPosition, LgfEndPosition, Id FROM {TableName} ORDER BY DateTime DESC, EndPosition DESC";
 
-            await using (var cmd = _connection.CreateCommand())
-            {
-                cmd.CommandText = commandText;
+            await using var cmd = _connection.CreateCommand();
+            cmd.CommandText = commandText;
 
-                await using (var reader = await cmd.ExecuteReaderAsync(cancellationToken))
-                {
-                    if (await reader.ReadAsync(cancellationToken))
-                        return new EventLogPosition(reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3));
-                }
-            }
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+
+            if (await reader.ReadAsync(cancellationToken))
+                return new EventLogPosition(reader.GetString(0), reader.GetInt64(1), reader.GetInt64(2), reader.GetInt64(3));
             return null;
         }
 
         public void Dispose()
         {
-            if (_connection != null)
-                _connection.Dispose();
+            _connection?.Dispose();
         }
     }
 }
