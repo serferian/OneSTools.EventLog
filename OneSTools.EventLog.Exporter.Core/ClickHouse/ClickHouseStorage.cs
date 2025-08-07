@@ -374,6 +374,26 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                     _logger?.LogError(e, "Failed to create dynamic table `{0}`", tableName);
                 }
             }
+            // ALTER TABLE ADD COLUMN для каждого нового поля
+            foreach (var f in fields)
+            {
+                var col = Transliterate(f.Key);
+                if (col != "_event_id" && col != "_event_stamp")
+                {
+                    var alter = $"ALTER TABLE `{tableName}` ADD COLUMN IF NOT EXISTS `{col}` {InferClickhouseType(f.Value)}";
+                    try
+                    {
+                        _logger?.LogDebug("{0}", alter);
+                        await using var cmd = _connection.CreateCommand();
+                        cmd.CommandText = alter;
+                        await cmd.ExecuteNonQueryAsync(cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger?.LogError(ex, $"Failed to ALTER TABLE `{tableName}` ADD COLUMN `{col}`");
+                    }
+                }
+            }
         }
 
         private string InferClickhouseType(object value)
