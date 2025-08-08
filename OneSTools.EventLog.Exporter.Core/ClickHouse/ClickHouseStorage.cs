@@ -409,8 +409,18 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                     var value = props[0].Value;
                     if (value.Type == JTokenType.Object)
                     {
-                        var dic = value.ToObject<Dictionary<string, object>>();
-                        fields = dic.ToDictionary(pair => Transliterate(pair.Key), pair => pair.Value);
+                        var dic = ((JObject)value).Properties()
+                            .ToDictionary(
+                                pair => Transliterate(pair.Name),
+                                pair =>
+                                {
+                                    var token = pair.Value;
+                                    if (token.Type == JTokenType.Object || token.Type == JTokenType.Array)
+                                        return (object)token.ToString(Newtonsoft.Json.Formatting.None);
+                                    return (object)token.ToString();
+                                }
+                            );
+                        fields = dic;
                         _logger?.LogDebug("{0} fields: {1}", fields.Count, fields);
                         return true;
                     }
