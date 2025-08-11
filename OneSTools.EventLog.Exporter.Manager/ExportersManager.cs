@@ -43,7 +43,7 @@ namespace OneSTools.EventLog.Exporter.Manager
         private readonly DateTimeZone _timeZone = DateTimeZoneProviders.Tzdb.GetSystemDefault();
         private readonly int _writingMaxDop;
         private readonly DateTime _skipEventsBeforeDate;
-        private readonly IConfiguration _configuration;
+        private IConfiguration _configuration;
 
         public ExportersManager(ILogger<ExportersManager> logger, IServiceProvider serviceProvider,
             IConfiguration configuration)
@@ -230,7 +230,16 @@ namespace OneSTools.EventLog.Exporter.Manager
                     {
                         var logger =
                             (ILogger<ClickHouseStorage>)_serviceProvider.GetService(typeof(ILogger<ClickHouseStorage>));
+                            
                         var connectionString = $"{_connectionString}Database={dataBaseName};";
+                        var inMemorySettings = new Dictionary<string, string> {
+                            {"ClickHouse:ConnectionString", connectionString}
+                        };
+                        var configurationBuilder = new ConfigurationBuilder();
+                        configurationBuilder.AddInMemoryCollection(inMemorySettings);
+                        _configuration = configurationBuilder.Build();
+
+                        logger?.LogDebug("{0}", _configuration.GetValue("ClickHouse:ConnectionString", ""));
 
                         return new ClickHouseStorage(logger, _configuration);
                     }
