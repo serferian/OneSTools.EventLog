@@ -321,6 +321,7 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
             catch (Exception e)
             {
                 _logger?.LogError(e, $"Failed to create dynamic table `{tableName}`");
+                throw;
             }
 
             // ALTER TABLE для новых полей
@@ -338,9 +339,10 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                         cmd.CommandText = alter;
                         await cmd.ExecuteNonQueryAsync(cancellationToken);
                     }
-                    catch (Exception ex)
+                    catch
                     {
-                        _logger?.LogError(ex, $"Failed to ALTER TABLE `{tableName}` ADD COLUMN `{col}`");
+                        _logger?.LogDebug($"Failed to ALTER TABLE `{tableName}` ADD COLUMN `{col}`");
+                        throw;
                     }
                 }
             }
@@ -446,32 +448,6 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
             if (value is DateTime)
                 return "DateTime";
             return "String";
-        }
-        private async Task InsertIntoDynamicTableAsync(string tableName, Dictionary<string, object> fields, CancellationToken cancellationToken)
-        {
-            var columns = fields.Keys.ToArray();
-            var parameters = columns.Select((c, i) => $"@p{i}").ToArray();
-            var sql = $"INSERT INTO `{tableName}`({string.Join(",", columns.Select(c => $"`{c}`"))}) VALUES({string.Join(",", parameters)})";
-            await using var cmd = _connection.CreateCommand();
-            cmd.CommandText = sql;
-            for (int i = 0; i < columns.Length; ++i)
-            {
-                var val = fields[columns[i]] ?? DBNull.Value;
-                cmd.Parameters.Add(new ClickHouseDbParameter
-                {
-                    ParameterName = $"p{i}",
-                    Value = val
-                });
-            }
-            try
-            {
-                _logger?.LogDebug("{0}", sql);
-                await cmd.ExecuteNonQueryAsync(cancellationToken);
-            }
-            catch (Exception e)
-            {
-                _logger?.LogError(e, $"Failed to insert row into dynamic table `{tableName}`");
-            }
         }
     }
 }
