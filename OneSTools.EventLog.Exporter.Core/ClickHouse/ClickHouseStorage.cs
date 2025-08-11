@@ -20,20 +20,15 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
         private ClickHouseConnection _connection;
         private string _connectionString;
         private string _databaseName;
+        private bool _ConvertJsonToSeparateTables;
         private readonly Dictionary<string, HashSet<string>> _dynamicTableColumns = new Dictionary<string, HashSet<string>>();
         private readonly object _columnsLock = new object();
-
-        public ClickHouseStorage(string connectionsString, ILogger<ClickHouseStorage> logger = null)
-        {
-            _logger = logger;
-            _connectionString = connectionsString;
-            Init();
-        }
 
         public ClickHouseStorage(ILogger<ClickHouseStorage> logger, IConfiguration configuration)
         {
             _logger = logger;
             _connectionString = configuration.GetValue("ClickHouse:ConnectionString", "");
+            _ConvertJsonToSeparateTables = configuration.GetValue("ClickHouse:ConvertJsonToSeparateTables", false);
             Init();
         }
 
