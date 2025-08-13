@@ -20,20 +20,15 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
         private ClickHouseConnection _connection;
         private string _connectionString;
         private string _databaseName;
+        private bool _ConvertJsonToSeparateTables;
         private readonly Dictionary<string, HashSet<string>> _dynamicTableColumns = new Dictionary<string, HashSet<string>>();
         private readonly object _columnsLock = new object();
-
-        public ClickHouseStorage(string connectionsString, ILogger<ClickHouseStorage> logger = null)
-        {
-            _logger = logger;
-            _connectionString = connectionsString;
-            Init();
-        }
 
         public ClickHouseStorage(ILogger<ClickHouseStorage> logger, IConfiguration configuration)
         {
             _logger = logger;
             _connectionString = configuration.GetValue("ClickHouse:ConnectionString", "");
+            _ConvertJsonToSeparateTables = configuration.GetValue("ClickHouse:ConvertJsonToSeparateTables", false);
             Init();
         }
 
@@ -162,28 +157,26 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
             return null;
         }
 
-        public async Task WriteEventLogDataAsync(List<EventLogItem> entities, CancellationToken cancellationToken = default)
+        // ОСНОВНОЙ МЕТОД
+        public async Task WriteEventLogDataAsync(List<EventLogItem> entities,
+            CancellationToken cancellationToken = default)
         {
             await CreateConnectionAsync(cancellationToken);
-            await EnsureDefaultTableExistsAsync(cancellationToken);
 
-            // Группы для bulk вставки
             var defaultEvents = new List<EventLogItem>();
             var dynamicRows = new Dictionary<string, List<Dictionary<string, object>>>();
 
             foreach (var item in entities)
             {
-                if (TryParseDynamicTable(item.Comment, out string tableName, out Dictionary<string, object> fields))
+                if (TryParseDynamicTable(item.Comment, out string rawTableName, out Dictionary<string, object> fields))
                 {
                     // Добавим служебные поля
                     fields["_event_id"] = item.Id;
                     fields["_event_stamp"] = item.DateTime;
 
-                    await EnsureDynamicTableExistsAsync(tableName, fields, cancellationToken);
-
-                    if (!dynamicRows.ContainsKey(tableName))
-                        dynamicRows[tableName] = new List<Dictionary<string, object>>();
-                    dynamicRows[tableName].Add(fields);
+                    if (!dynamicRows.ContainsKey(rawTableName))
+                        dynamicRows[rawTableName] = new List<Dictionary<string, object>>();
+                    dynamicRows[rawTableName].Add(fields);
                 }
                 else
                 {
@@ -191,37 +184,20 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                 }
             }
 
-            // Bulk insert для динамических таблиц
+            // Bulk-insert: динамические таблицы
             foreach (var pair in dynamicRows)
             {
-                string tableName = pair.Key;
-                var rows = pair.Value;
-
-                // Собираем все возможные ключи (выравниваем структуру)
-                var columns = rows.SelectMany(r => r.Keys).Distinct().OrderBy(x => x).ToArray();
-                var data = rows.Select(r => columns.Select(c => r.ContainsKey(c) ? r[c] ?? DBNull.Value : DBNull.Value).ToArray());
-
-                using var copy = new ClickHouseBulkCopy(_connection)
-                {
-                    DestinationTableName = tableName,
-                    BatchSize = rows.Count
-                };
-
-                try
-                {
-                    await copy.WriteToServerAsync(data, cancellationToken);
-                }
-                catch (Exception ex)
-                {
-                    _logger?.LogError(ex, $"Failed to write bulk data to dynamic table {tableName}");
-                    throw;
-                }
-                _logger?.LogDebug($"{rows.Count} dynamic items were written to {tableName}");
+                await BulkInsertIntoDynamicTableAsync(pair.Key, pair.Value, cancellationToken);
             }
 
-            // Bulk insert для основной таблицы
+            // Bulk-insert: стандартные события
             if (defaultEvents.Count > 0)
             {
+                using var copy = new ClickHouseBulkCopy(_connection)
+                {
+                    DestinationTableName = TableName,
+                    BatchSize = defaultEvents.Count
+                };
                 var data = defaultEvents.Select(item => new object[]
                 {
                     item.FileName ?? "",
@@ -250,24 +226,132 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                     item.Session
                 });
 
-                using var copy = new ClickHouseBulkCopy(_connection)
-                {
-                    DestinationTableName = TableName,
-                    BatchSize = defaultEvents.Count
-                };
-
                 try
                 {
                     await copy.WriteToServerAsync(data, cancellationToken);
                 }
                 catch (Exception ex)
                 {
-                    _logger?.LogError(ex, $"Failed to write bulk data to main table {_databaseName}.{TableName}");
+                    _logger?.LogError(ex, $"Failed to write data to {_databaseName}");
                     throw;
                 }
-                _logger?.LogDebug($"{defaultEvents.Count} main items were written to {_databaseName}.{TableName}");
+
+                _logger?.LogDebug($"{defaultEvents.Count} items were being written to {_databaseName}");
             }
         }
+
+        // Метод bulk-insert для динамической таблицы
+        private async Task BulkInsertIntoDynamicTableAsync(
+            string rawTableName,
+            List<Dictionary<string, object>> rows,
+            CancellationToken cancellationToken = default)
+        {
+            var tableName = Transliterate(rawTableName);
+
+            // Обеспечить что существует таблица и структура актуальна
+            if (rows.Count == 0)
+                return;
+            var fieldsSample = rows.First();
+            await EnsureDynamicTableExistsAsync(rawTableName, fieldsSample, cancellationToken);
+
+            // Получить актуальный список колонок в нужном порядке
+            var columnNames = await GetActualColumnsAsync(tableName, cancellationToken);
+
+            // Привести каждую строку к массиву object[] по списку колонок
+            var data = rows.Select(dict =>
+                columnNames
+                    .Select(col => dict.ContainsKey(col) ? dict[col] ?? DBNull.Value : DBNull.Value)
+                    .ToArray()).ToList();
+
+            using var copy = new ClickHouseBulkCopy(_connection)
+            {
+                DestinationTableName = tableName,
+                BatchSize = data.Count
+            };
+
+            try
+            {
+                await copy.WriteToServerAsync(data, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, $"Failed to write bulk data to dynamic table `{tableName}`");
+                throw;
+            }
+
+            _logger?.LogDebug($"{rows.Count} dynamic items were written to {tableName}: ");
+        }
+
+        // Получить актуальные имена колонок (в порядке физических столбцов)
+        private async Task<string[]> GetActualColumnsAsync(string tableName, CancellationToken cancellationToken = default)
+        {
+            var columnNames = new List<string>();
+            var sql = $"DESCRIBE TABLE `{tableName}`";
+            await using var cmd = _connection.CreateCommand();
+            cmd.CommandText = sql;
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                columnNames.Add(reader.GetString(0));
+            }
+            return columnNames.ToArray();
+        }
+
+        // ОБНОВЛЕНИЕ СТРУКТУРЫ ТАБЛИЦЫ
+        private async Task EnsureDynamicTableExistsAsync(string rawTableName, Dictionary<string, object> fields, CancellationToken cancellationToken)
+        {
+            var tableName = Transliterate(rawTableName);
+
+            // CREATE TABLE IF NOT EXISTS с начальными полями
+            var columnsSql = new List<string>
+            {
+                "`_event_id` Int64",
+                "`_event_stamp` DateTime"
+            };
+            foreach (var f in fields)
+            {
+                var col = Transliterate(f.Key);
+                if (col == "_event_id" || col == "_event_stamp") continue;
+                columnsSql.Add($"`{col}` {InferClickhouseType(f.Value)}");
+            }
+
+            var create = $@"CREATE TABLE IF NOT EXISTS `{tableName}` ({string.Join(", ", columnsSql)}) ENGINE = MergeTree() ORDER BY _event_stamp";
+            try
+            {
+                await using var cmd = _connection.CreateCommand();
+                cmd.CommandText = create;
+                await cmd.ExecuteNonQueryAsync(cancellationToken);
+            }
+            catch (Exception e)
+            {
+                _logger?.LogError(e, $"Failed to create dynamic table `{tableName}`");
+                throw;
+            }
+
+            // ALTER TABLE для новых полей
+            HashSet<string> actualColumns = new HashSet<string>(await GetActualColumnsAsync(tableName, cancellationToken), StringComparer.OrdinalIgnoreCase);
+
+            foreach (var f in fields)
+            {
+                var col = Transliterate(f.Key);
+                if (!actualColumns.Contains(col, StringComparer.OrdinalIgnoreCase) && col != "_event_id" && col != "_event_stamp")
+                {
+                    var alter = $"ALTER TABLE `{tableName}` ADD COLUMN IF NOT EXISTS `{col}` {InferClickhouseType(f.Value)}";
+                    try
+                    {
+                        await using var cmd = _connection.CreateCommand();
+                        cmd.CommandText = alter;
+                        await cmd.ExecuteNonQueryAsync(cancellationToken);
+                    }
+                    catch
+                    {
+                        _logger?.LogDebug($"Failed to ALTER TABLE `{tableName}` ADD COLUMN `{col}`");
+                        throw;
+                    }
+                }
+            }
+        }
+
         private static string Transliterate(string input)
         {
             Dictionary<char, string> map = new Dictionary<char, string>
@@ -317,63 +401,29 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                     var value = props[0].Value;
                     if (value.Type == JTokenType.Object)
                     {
-                        var dic = value.ToObject<Dictionary<string, object>>();
-                        fields = dic.ToDictionary(pair => Transliterate(pair.Key), pair => pair.Value);
+                        var dic = ((JObject)value).Properties()
+                            .ToDictionary(
+                                pair => Transliterate(pair.Name),
+                                pair =>
+                                {
+                                    var token = pair.Value;
+                                    if (token.Type == JTokenType.Object || token.Type == JTokenType.Array)
+                                        return (object)token.ToString(Newtonsoft.Json.Formatting.None);
+                                    return (object)token.ToString();
+                                }
+                            );
+                        fields = dic;
                         _logger?.LogDebug("{0} fields: {1}", fields.Count, fields);
                         return true;
                     }
                 }
             }
-            catch { }
+            catch
+            {
+                _logger?.LogDebug($"Can't parse JSON, items were written to default");
+                //_logger?.LogError(ex, $"Failed to write data {comment} to {TableName}");
+            }
             return false;
-        }
-
-        private async Task EnsureDynamicTableExistsAsync(string tableName, Dictionary<string, object> fields, CancellationToken cancellationToken)
-        {
-            lock (_columnsLock)
-            {
-                if (!_dynamicTableColumns.ContainsKey(tableName))
-                {
-                    _dynamicTableColumns[tableName] = new HashSet<string>(fields.Keys, StringComparer.OrdinalIgnoreCase);
-                }
-                else
-                {
-                    foreach (var f in fields.Keys)
-                        _dynamicTableColumns[tableName].Add(f);
-                }
-            }
-
-            var columnsSql = new List<string>
-            {
-                "`_event_id` Int64",
-                "`_event_stamp` DateTime"
-            };
-
-            foreach (var f in fields)
-            {
-                if (f.Key == "_event_id" || f.Key == "_event_stamp") continue;
-                var columnName = Transliterate(f.Key);
-                columnsSql.Add($"`{columnName}` {InferClickhouseType(f.Value)}");
-                //columnsSql.Add(string.Format("`{0}` {1}", f.Key, InferClickhouseType(f.Value)));
-            }
-
-            string createSql =
-                string.Format("CREATE TABLE IF NOT EXISTS `{0}` ({1}) ENGINE = MergeTree() ORDER BY _event_stamp",
-                    tableName, string.Join(", ", columnsSql));
-
-            using (var cmd = _connection.CreateCommand())
-            {
-                _logger?.LogDebug("{0}", createSql);
-                cmd.CommandText = createSql;
-                try
-                {
-                    await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception e)
-                {
-                    _logger?.LogError(e, "Failed to create dynamic table `{0}`", tableName);
-                }
-            }
         }
 
         private string InferClickhouseType(object value)
@@ -389,32 +439,6 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
             if (value is DateTime)
                 return "DateTime";
             return "String";
-        }
-        private async Task InsertIntoDynamicTableAsync(string tableName, Dictionary<string, object> fields, CancellationToken cancellationToken)
-        {
-            var columns = fields.Keys.ToArray();
-            var parameters = columns.Select((c, i) => $"@p{i}").ToArray();
-            var sql = $"INSERT INTO `{tableName}`({string.Join(",", columns.Select(c => $"`{c}`"))}) VALUES({string.Join(",", parameters)})";
-            await using var cmd = _connection.CreateCommand();
-            cmd.CommandText = sql;
-            for (int i = 0; i < columns.Length; ++i)
-            {
-                var val = fields[columns[i]] ?? DBNull.Value;
-                cmd.Parameters.Add(new ClickHouseDbParameter
-                {
-                    ParameterName = $"p{i}",
-                    Value = val
-                });
-            }
-            try
-            {
-                _logger?.LogDebug("{0}", sql);
-                await cmd.ExecuteNonQueryAsync(cancellationToken);
-            }
-            catch (Exception e)
-            {
-                _logger?.LogError(e, $"Failed to insert row into dynamic table `{tableName}`");
-            }
         }
     }
 }

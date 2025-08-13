@@ -43,13 +43,14 @@ namespace OneSTools.EventLog.Exporter.Manager
         private readonly DateTimeZone _timeZone = DateTimeZoneProviders.Tzdb.GetSystemDefault();
         private readonly int _writingMaxDop;
         private readonly DateTime _skipEventsBeforeDate;
+        private IConfiguration _configuration;
 
         public ExportersManager(ILogger<ExportersManager> logger, IServiceProvider serviceProvider,
             IConfiguration configuration)
         {
             _logger = logger;
             _serviceProvider = serviceProvider;
-
+            _configuration = configuration;
             _clstFolders = configuration.GetSection("Manager:ClstFolders").Get<List<ClstFolder>>();
             _storageType = configuration.GetValue("Exporter:StorageType", StorageType.None);
             _portion = configuration.GetValue("Exporter:Portion", 10000);
@@ -229,9 +230,16 @@ namespace OneSTools.EventLog.Exporter.Manager
                     {
                         var logger =
                             (ILogger<ClickHouseStorage>)_serviceProvider.GetService(typeof(ILogger<ClickHouseStorage>));
+                            
                         var connectionString = $"{_connectionString}Database={dataBaseName};";
+                        var inMemorySettings = new Dictionary<string, string> {
+                            {"ClickHouse:ConnectionString", connectionString}
+                        };
+                        var configurationBuilder = new ConfigurationBuilder();
+                        configurationBuilder.AddInMemoryCollection(inMemorySettings);
+                        _configuration = configurationBuilder.Build();
 
-                        return new ClickHouseStorage(connectionString, logger);
+                        return new ClickHouseStorage(logger, _configuration);
                     }
                 case StorageType.ElasticSearch:
                     {
