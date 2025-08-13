@@ -158,13 +158,12 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
         }
 
         // ОСНОВНОЙ МЕТОД
-        public async Task WriteEventLogDataAsync(List<EventLogItem> entities, CancellationToken cancellationToken = default)
+        public async Task WriteEventLogDataAsync(List<EventLogItem> entities,
+            CancellationToken cancellationToken = default)
         {
             await CreateConnectionAsync(cancellationToken);
 
             var defaultEvents = new List<EventLogItem>();
-
-            // Группируем динамические события по таблицам
             var dynamicRows = new Dictionary<string, List<Dictionary<string, object>>>();
 
             foreach (var item in entities)
@@ -185,13 +184,13 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                 }
             }
 
-            // Bulk-insert динамические таблицы
+            // Bulk-insert: динамические таблицы
             foreach (var pair in dynamicRows)
             {
                 await BulkInsertIntoDynamicTableAsync(pair.Key, pair.Value, cancellationToken);
             }
 
-            // Старый пайплайн для "обычных" эвентов
+            // Bulk-insert: стандартные события
             if (defaultEvents.Count > 0)
             {
                 using var copy = new ClickHouseBulkCopy(_connection)
@@ -199,8 +198,6 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                     DestinationTableName = TableName,
                     BatchSize = defaultEvents.Count
                 };
-
-                // подготовка массива данных для bulk insert
                 var data = defaultEvents.Select(item => new object[]
                 {
                     item.FileName ?? "",
@@ -235,44 +232,41 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                 }
                 catch (Exception ex)
                 {
-                    _logger?.LogError(ex, $"Failed to write data to {TableName}");
+                    _logger?.LogError(ex, $"Failed to write data to {_databaseName}");
                     throw;
                 }
 
-                _logger?.LogDebug($"{defaultEvents.Count} items were written to {TableName}");
+                _logger?.LogDebug($"{defaultEvents.Count} items were being written to {_databaseName}");
             }
         }
 
-        // BULK INSERT ДЛЯ ДИНАМИЧЕСКИХ ТАБЛИЦ
-        private async Task BulkInsertIntoDynamicTableAsync(string rawTableName, List<Dictionary<string, object>> rows, CancellationToken cancellationToken)
+        // Метод bulk-insert для динамической таблицы
+        private async Task BulkInsertIntoDynamicTableAsync(
+            string rawTableName,
+            List<Dictionary<string, object>> rows,
+            CancellationToken cancellationToken = default)
         {
             var tableName = Transliterate(rawTableName);
 
-            // Собираем все колонки, которые есть во всех строках
-            var allColumnsSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                "_event_id", "_event_stamp"
-            };
-            foreach (var dict in rows)
-                foreach (var k in dict.Keys)
-                    allColumnsSet.Add(Transliterate(k));
-            var allColumns = allColumnsSet.ToList();
-
-            // Расширяем структуру таблицы, если нужно
+            // Обеспечить что существует таблица и структура актуальна
+            if (rows.Count == 0)
+                return;
             var fieldsSample = rows.First();
             await EnsureDynamicTableExistsAsync(rawTableName, fieldsSample, cancellationToken);
 
-            // Выравниваем все строки данных по всем колонкам
-            var data = rows.Select(row =>
-                allColumns.Select(col =>
-                    row.TryGetValue(col, out var value) ? value ?? DBNull.Value : DBNull.Value
-                ).ToArray()
-            );
+            // Получить актуальный список колонок в нужном порядке
+            var columnNames = await GetActualColumnsAsync(tableName, cancellationToken);
+
+            // Привести каждую строку к массиву object[] по списку колонок
+            var data = rows.Select(dict =>
+                columnNames
+                    .Select(col => dict.ContainsKey(col) ? dict[col] ?? DBNull.Value : DBNull.Value)
+                    .ToArray()).ToList();
 
             using var copy = new ClickHouseBulkCopy(_connection)
             {
                 DestinationTableName = tableName,
-                BatchSize = rows.Count
+                BatchSize = data.Count
             };
 
             try
@@ -285,7 +279,22 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                 throw;
             }
 
-            _logger?.LogDebug($"{rows.Count} dynamic items were written to {tableName}");
+            _logger?.LogDebug($"{rows.Count} dynamic items were written to {tableName}: ");
+        }
+
+        // Получить актуальные имена колонок (в порядке физических столбцов)
+        private async Task<string[]> GetActualColumnsAsync(string tableName, CancellationToken cancellationToken = default)
+        {
+            var columnNames = new List<string>();
+            var sql = $"DESCRIBE TABLE `{tableName}`";
+            await using var cmd = _connection.CreateCommand();
+            cmd.CommandText = sql;
+            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                columnNames.Add(reader.GetString(0));
+            }
+            return columnNames.ToArray();
         }
 
         // ОБНОВЛЕНИЕ СТРУКТУРЫ ТАБЛИЦЫ
@@ -320,7 +329,7 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
             }
 
             // ALTER TABLE для новых полей
-            HashSet<string> actualColumns = await GetActualColumnsAsync(tableName, cancellationToken);
+            HashSet<string> actualColumns = new HashSet<string>(await GetActualColumnsAsync(tableName, cancellationToken), StringComparer.OrdinalIgnoreCase);
 
             foreach (var f in fields)
             {
@@ -341,20 +350,6 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                     }
                 }
             }
-        }
-
-        private async Task<HashSet<string>> GetActualColumnsAsync(string tableName, CancellationToken cancellationToken)
-        {
-            var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            string sql = $"SELECT name FROM system.columns WHERE table = '{tableName}'";
-            await using var cmd = _connection.CreateCommand();
-            cmd.CommandText = sql;
-            await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
-            while (await reader.ReadAsync(cancellationToken))
-            {
-                columns.Add(reader.GetString(0));
-            }
-            return columns;
         }
 
         private static string Transliterate(string input)
@@ -423,9 +418,10 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                     }
                 }
             }
-            catch (Exception ex)
+            catch
             {
-                _logger?.LogError(ex, $"Failed to write data {comment} to {TableName}");
+                _logger?.LogDebug($"Can't parse JSON, items were written to default");
+                //_logger?.LogError(ex, $"Failed to write data {comment} to {TableName}");
             }
             return false;
         }
