@@ -239,8 +239,6 @@ namespace OneSTools.EventLog.Exporter.Manager
                         configurationBuilder.AddInMemoryCollection(inMemorySettings);
                         _configuration = configurationBuilder.Build();
 
-                        logger?.LogDebug("{0}", _configuration.GetValue("ClickHouse:ConnectionString", ""));
-
                         return new ClickHouseStorage(logger, _configuration);
                     }
                 case StorageType.ElasticSearch:
