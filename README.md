@@ -71,7 +71,8 @@
     "WritingMaxDegreeOfParallelism": 8,
     "CollectedFactor": 8,
     "ReadingTimeout": 1,
-    "LoadArchive": false
+    "LoadArchive": false,
+    "LogFilesStoringDays": 0
   }
 ```
 где:  
@@ -85,11 +86,13 @@
 6. *CollectedFactor* - коэффициент количества элементов, которые могут быть помещены в очередь записи. Предельное количество элементов равно Portion * CollectedFactor. По умолчанию - 2  
 7. *ReadingTimeout* - таймаут сброса данных при достижении конца файла (в секундах). По умолчанию - 1 сек.  
 8. *LoadArchive* - Специальный параметр, предназначенный для первоначальной загрузки архивных данных. При установке параметра в true, отключается "live" режим и не выполняется запрос последнего обработанного файла из БД
+9. *LogFilesStoringDays* - количество дней хранения файлов журнала в папке *LogFolder*
 
 **ClickHouse:**
 ```json
 "ConnectionStrings": {
-    "Default": "Host=localhost;Port=8123;Username=default;password=;Database=database_name;"
+    "Default": "Host=localhost;Port=8123;Username=default;password=;Database=database_name;",
+    "ConvertJsonToSeparateTables": false
   }
 ```
 **ElasticSearch:**
@@ -166,10 +169,12 @@
     "WritingMaxDegreeOfParallelism": 1,
     "CollectedFactor": 2,
     "ReadingTimeout": 1,
-    "LoadArchive": false
+    "LoadArchive": false,
+    "LogFilesStoringDays": 0
   },
   "ClickHouse": {
-    "ConnectionString": "Host=192.168.0.93;Port=8123;Database=upp_main_el;Username=default;password=;"
+    "ConnectionString": "Host=192.168.0.93;Port=8123;Database=upp_main_el;Username=default;password=;",
+    "ConvertJsonToSeparateTables": false
   },
   "ElasticSearch": {
     "Nodes": [

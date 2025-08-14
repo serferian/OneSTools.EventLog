@@ -13,5 +13,10 @@ namespace OneSTools.EventLog.Exporter.Core
         public int ReadingTimeout { get; set; } = 1;
         public bool LoadArchive { get; set; } = false;
         public DateTime SkipEventsBeforeDate { get; set; }
+        /// <summary>
+        /// Количество дней, после которых прочитанные lgp и lgx-файлы считаются старыми и подлежат удалению.
+        /// Значение 0 или меньше — не удалять файлы.
+        /// </summary>
+        public int LogFilesStoringDays { get; set; } = 0;
     }
 }

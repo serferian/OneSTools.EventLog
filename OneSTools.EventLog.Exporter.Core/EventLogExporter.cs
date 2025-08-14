@@ -30,6 +30,8 @@ namespace OneSTools.EventLog.Exporter.Core
 
         private bool _disposedValue;
 
+        private int _LogFilesStoringDays;
+
         // DataFlow blocks
         private EventLogReader _eventLogReader;
         private ActionBlock<EventLogItem[]> _writeBlock;
@@ -39,7 +41,6 @@ namespace OneSTools.EventLog.Exporter.Core
         {
             _logger = logger;
             _storage = storage;
-
             _logFolder = settings.LogFolder;
             _portion = settings.Portion;
             _writingMaxDop = settings.WritingMaxDop;
@@ -48,6 +49,7 @@ namespace OneSTools.EventLog.Exporter.Core
             _timeZone = settings.TimeZone;
             _readingTimeout = settings.ReadingTimeout;
             _skipEventsBeforeDate = settings.SkipEventsBeforeDate;
+            _LogFilesStoringDays = settings.LogFilesStoringDays;
 
             CheckSettings();
         }
@@ -57,7 +59,6 @@ namespace OneSTools.EventLog.Exporter.Core
         {
             _logger = logger;
             _storage = storage;
-
             _logFolder = configuration.GetValue("Exporter:LogFolder", "");
             _portion = configuration.GetValue("Exporter:Portion", 10000);
             _writingMaxDop = configuration.GetValue("Exporter:WritingMaxDegreeOfParallelism", 1);
@@ -65,6 +66,7 @@ namespace OneSTools.EventLog.Exporter.Core
             _loadArchive = configuration.GetValue("Exporter:LoadArchive", false);
             _readingTimeout = configuration.GetValue("Exporter:ReadingTimeout", 1);
             _skipEventsBeforeDate = configuration.GetValue("Exporter:SkipEventsBeforeDate", DateTime.MinValue);
+            _LogFilesStoringDays = configuration.GetValue("Exporter:LogFilesStoringDays", 0);
 
             var timeZone = configuration.GetValue("Exporter:TimeZone", "");
 
@@ -107,7 +109,7 @@ namespace OneSTools.EventLog.Exporter.Core
             try
             {
                 var settings = await GetReaderSettingsAsync(cancellationToken);
-                _eventLogReader = new EventLogReader(settings);
+                _eventLogReader = new EventLogReader(settings, _LogFilesStoringDays, (ILogger)_logger);
 
                 while (!cancellationToken.IsCancellationRequested && !_writeBlock.Completion.IsCompleted)
                 {
