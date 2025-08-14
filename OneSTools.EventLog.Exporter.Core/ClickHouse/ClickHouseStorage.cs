@@ -418,11 +418,7 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                     }
                 }
             }
-            catch
-            {
-                _logger?.LogDebug($"Can't parse JSON, items were written to default");
-                //_logger?.LogError(ex, $"Failed to write data {comment} to {TableName}");
-            }
+            catch { }
             return false;
         }
 

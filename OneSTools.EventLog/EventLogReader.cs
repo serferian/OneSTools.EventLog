@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using Microsoft.Extensions.Logging;
 
 namespace OneSTools.EventLog
 {
@@ -17,10 +18,16 @@ namespace OneSTools.EventLog
         private ManualResetEvent _lgpChangedCreated;
         private FileSystemWatcher _lgpFilesWatcher;
         private LgpReader _lgpReader;
+        private int _LogFilesStoringDays;
+        private readonly ILogger _logger;
 
-        public EventLogReader(EventLogReaderSettings settings)
+        public EventLogReader(EventLogReaderSettings settings, int LogFilesStoringDays, ILogger logger)
         {
             _settings = settings;
+            _LogFilesStoringDays = LogFilesStoringDays;
+            _logger = logger;
+
+            _logger?.LogDebug($"{_LogFilesStoringDays} store days in {_settings.LogFolder}");
 
             _lgfReader = new LgfReader(Path.Combine(_settings.LogFolder, "1Cv8.lgf"));
             _lgfReader.SetPosition(settings.LgfStartPosition);
@@ -125,6 +132,8 @@ namespace OneSTools.EventLog
 
             var files = Directory.GetFiles(_settings.LogFolder, "*.lgp");
 
+            _logger?.LogDebug($"Found {files.Count()} in {_settings.LogFolder}");
+
             foreach (var file in files)
                 if (_lgpReader != null)
                 {
@@ -137,7 +146,10 @@ namespace OneSTools.EventLog
                 }
 
             var orderedFiles = filesDateTime.OrderBy(c => c.Item2).ToList();
-
+            // Удаление старых файлов согласно политике хранения
+            if (_LogFilesStoringDays > 0)
+                DeleteOldLogFiles(orderedFiles, currentReaderLastWriteDateTime, _LogFilesStoringDays);
+            
             var (item1, _) = orderedFiles.FirstOrDefault(c => c.Item2 > currentReaderLastWriteDateTime);
 
             if (string.IsNullOrEmpty(item1))
@@ -148,11 +160,43 @@ namespace OneSTools.EventLog
             _lgpReader?.Dispose();
             _lgpReader = null;
 
+            _logger?.LogDebug($"Portion per request: {item1}");
+
             _lgpReader = new LgpReader(item1, _settings.TimeZone, _lgfReader, _settings.SkipEventsBeforeDate);
 
             return true;
         }
 
+        private void DeleteOldLogFiles(List<(string FileName, DateTime LastWrite)> orderedFiles, DateTime currentReaderLastWriteDateTime, int storingDays)
+        {
+            var cutoffDate = currentReaderLastWriteDateTime.AddDays(-storingDays);
+            var itemsToDelete = orderedFiles
+                .Where(c => c.LastWrite < cutoffDate)
+                .ToList();
+            _logger?.LogDebug($"Found {itemsToDelete.Count()} in {_settings.LogFolder} for delete by {cutoffDate}");
+
+            foreach (var item in itemsToDelete)
+            {
+                try
+                {
+                    if (File.Exists(item.FileName))
+                    {
+                        _logger?.LogDebug("try to delete file: {0}", item.FileName);
+                        File.Delete(item.FileName);
+                    }
+                    var lgxFile = Path.ChangeExtension(item.FileName, ".lgx");
+                    if (File.Exists(lgxFile))
+                    {
+                        _logger?.LogDebug($"try to delete file: {lgxFile}");
+                        File.Delete(lgxFile);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogError(ex, $"can't delete file: {item.FileName}");
+                }
+            }
+        }
         private void StartLgpFilesWatcher()
         {
             _lgpChangedCreated = new ManualResetEvent(false);
