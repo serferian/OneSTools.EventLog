@@ -8,7 +8,6 @@ using ClickHouse.Client.ADO;
 using ClickHouse.Client.Copy;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
-using ClickHouse.Client.ADO.Parameters;
 using Newtonsoft.Json.Linq;
 
 namespace OneSTools.EventLog.Exporter.Core.ClickHouse
@@ -100,7 +99,7 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                     Id Int64 Codec(DoubleDelta, LZ4),
                     DateTime DateTime('UTC') Codec(Delta, LZ4),
                     TransactionStatus LowCardinality(String),
-                    TransactionDateTime DateTime('UTC') Codec(Delta, LZ4),
+                    TransactionDate DateTime('UTC') Codec(Delta, LZ4),
                     TransactionNumber Int64 Codec(DoubleDelta, LZ4),
                     UserUuid LowCardinality(String),
                     User LowCardinality(String),
