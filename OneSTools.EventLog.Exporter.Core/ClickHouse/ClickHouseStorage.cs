@@ -19,16 +19,19 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
         private ClickHouseConnection _connection;
         private string _connectionString;
         private string _databaseName;
-        private string _databaseName;
+        private string _databaseName1C;
+        private string _machineName;
         private bool _ConvertJsonToSeparateTables;
         private readonly Dictionary<string, HashSet<string>> _dynamicTableColumns = new Dictionary<string, HashSet<string>>();
         private readonly object _columnsLock = new object();
 
-        public ClickHouseStorage(ILogger<ClickHouseStorage> logger, IConfiguration configuration)
+        public ClickHouseStorage(ILogger<ClickHouseStorage> logger, IConfiguration configuration, string databaseName1C)
         {
             _logger = logger;
             _connectionString = configuration.GetValue("ClickHouse:ConnectionString", "");
             _ConvertJsonToSeparateTables = configuration.GetValue("ClickHouse:ConvertJsonToSeparateTables", false);
+            _databaseName1C = databaseName1C;
+            _machineName = Environment.MachineName;
             Init();
         }
 
@@ -95,7 +98,8 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                 @"CREATE TABLE IF NOT EXISTS EventLogItems
                 (
                     FileName LowCardinality(String),
-                    Database1C LowCardinality(String),
+                    DatabaseName LowCardinality(String),
+                    Separator LowCardinality(String),
                     EndPosition Int64 Codec(DoubleDelta, LZ4),
                     LgfEndPosition Int64 Codec(DoubleDelta, LZ4),
                     Id Int64 Codec(DoubleDelta, LZ4),
@@ -137,7 +141,10 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
             await CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
 
             var commandText = string.Format(
-                "SELECT FileName, EndPosition, LgfEndPosition, Id FROM {0} ORDER BY DateTime DESC, EndPosition DESC LIMIT 1", TableName);
+                @"SELECT TOP 1 FileName, EndPosition, LgfEndPosition, Id
+                FROM {0} 
+                WHERE Separator = '{1}' and DatabaseName = '{2}'
+                ORDER BY DateTime DESC, EndPosition DESC", TableName, _machineName, _databaseName1C);
 
             using (var cmd = _connection.CreateCommand())
             {
@@ -174,6 +181,8 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                     // Добавим служебные поля
                     fields["_event_id"] = item.Id;
                     fields["_event_stamp"] = item.DateTime;
+                    fields["_database_name"] = _databaseName1C;
+                    fields["_separator"] = _machineName;
 
                     if (!dynamicRows.ContainsKey(rawTableName))
                         dynamicRows[rawTableName] = new List<Dictionary<string, object>>();
@@ -181,6 +190,8 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                 }
                 else
                 {
+                    item.DatabaseName = _databaseName1C;
+                    item.Separator = _machineName;
                     defaultEvents.Add(item);
                 }
             }
@@ -202,6 +213,8 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                 var data = defaultEvents.Select(item => new object[]
                 {
                     item.FileName ?? "",
+                    item.DatabaseName ?? "",
+                    item.Separator ?? "",
                     item.EndPosition,
                     item.LgfEndPosition,
                     item.Id,
@@ -307,12 +320,14 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
             var columnsSql = new List<string>
             {
                 "`_event_id` Int64",
-                "`_event_stamp` DateTime"
+                "`_event_stamp` DateTime",
+                "`_database_name` LowCardinality(String)",
+                "`_separator` LowCardinality(String)"
             };
             foreach (var f in fields)
             {
                 var col = Transliterate(f.Key);
-                if (col == "_event_id" || col == "_event_stamp") continue;
+                if (col == "_event_id" || col == "_event_stamp" || col == "_database_name" || col == "_separator") continue;
                 columnsSql.Add($"`{col}` {InferClickhouseType(f.Value)}");
             }
 
@@ -335,7 +350,7 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
             foreach (var f in fields)
             {
                 var col = Transliterate(f.Key);
-                if (!actualColumns.Contains(col, StringComparer.OrdinalIgnoreCase) && col != "_event_id" && col != "_event_stamp")
+                if (!actualColumns.Contains(col, StringComparer.OrdinalIgnoreCase) && col != "_event_id" && col != "_event_stamp" && col != "_database_name" && col != "_separator")
                 {
                     var alter = $"ALTER TABLE `{tableName}` ADD COLUMN IF NOT EXISTS `{col}` {InferClickhouseType(f.Value)}";
                     try
@@ -423,7 +438,7 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
             return false;
         }
 
-        private string InferClickhouseType(object value)
+        private static string InferClickhouseType(object value)
         {
             if (value == null)
                 return "String";
