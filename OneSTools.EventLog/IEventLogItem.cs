@@ -15,7 +15,9 @@ namespace OneSTools.EventLog
         long EndPosition { get; set; }
         long LgfEndPosition { get; set; }
         string Event { get; set; }
+        string Separator { get; set; }
         string FileName { get; set; }
+        string DatabaseName { get; set; }
         int MainPort { get; set; }
         string Metadata { get; set; }
         string MetadataUuid { get; set; }

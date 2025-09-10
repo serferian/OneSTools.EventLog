@@ -6,11 +6,13 @@ namespace OneSTools.EventLog
     {
         public long Id { get; set; } = 0;
         public virtual string FileName { get; set; } = "";
+        public virtual string DatabaseName { get; set; } = "";
+        public virtual string Separator { get; set; } = "";
         public virtual long EndPosition { get; set; } = 0;
         public virtual long LgfEndPosition { get; set; } = 0;
         public virtual DateTime DateTime { get; set; } = DateTime.MinValue;
         public virtual string TransactionStatus { get; set; } = "";
-        public virtual DateTime TransactionDateTime { get; set; } = new DateTime(1970, 1, 1);
+        public virtual DateTime TransactionDateTime { get; set; } = DateTime.UnixEpoch;
         public virtual long TransactionNumber { get; set; } = 0;
         public virtual string UserUuid { get; set; } = "";
         public virtual string User { get; set; } = "";

@@ -186,7 +186,7 @@ namespace OneSTools.EventLog.Exporter.Manager
                             {
                                 try
                                 {
-                                    using var storage = GetStorage(dataBaseName);
+                                    using var storage = GetStorage(dataBaseName, name);
                                     using var exporter = new EventLogExporter(settings, storage, logger);
                                     await exporter.StartAsync(cts.Token);
                                 }
@@ -226,7 +226,7 @@ namespace OneSTools.EventLog.Exporter.Manager
             }
         }
 
-        private IEventLogStorage GetStorage(string dataBaseName)
+        private IEventLogStorage GetStorage(string dataBaseName, string dataBaseName1C)
         {
             switch (_storageType)
             {
@@ -243,7 +243,7 @@ namespace OneSTools.EventLog.Exporter.Manager
                         configurationBuilder.AddInMemoryCollection(inMemorySettings);
                         _configuration = configurationBuilder.Build();
 
-                        return new ClickHouseStorage(logger, _configuration);
+                        return new ClickHouseStorage(logger, _configuration, dataBaseName1C);
                     }
                 case StorageType.ElasticSearch:
                     {
