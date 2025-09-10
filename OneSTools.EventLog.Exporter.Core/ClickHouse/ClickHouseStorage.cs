@@ -19,6 +19,7 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
         private ClickHouseConnection _connection;
         private string _connectionString;
         private string _databaseName;
+        private string _databaseName;
         private bool _ConvertJsonToSeparateTables;
         private readonly Dictionary<string, HashSet<string>> _dynamicTableColumns = new Dictionary<string, HashSet<string>>();
         private readonly object _columnsLock = new object();
@@ -94,6 +95,7 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                 @"CREATE TABLE IF NOT EXISTS EventLogItems
                 (
                     FileName LowCardinality(String),
+                    Database1C LowCardinality(String),
                     EndPosition Int64 Codec(DoubleDelta, LZ4),
                     LgfEndPosition Int64 Codec(DoubleDelta, LZ4),
                     Id Int64 Codec(DoubleDelta, LZ4),
