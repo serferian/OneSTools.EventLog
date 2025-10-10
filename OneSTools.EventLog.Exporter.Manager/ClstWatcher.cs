@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using OneSTools.BracketsFile;
 
@@ -47,7 +48,12 @@ namespace OneSTools.EventLog.Exporter.Manager
         {
             var items = new Dictionary<string, (string, string)>();
 
-            var fileData = File.ReadAllText(_path);
+            var fs = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var sr = new StreamReader(fs, Encoding.UTF8, true);
+            var fileData = sr.ReadToEnd();
+            
+            fs.Close();
+
             var parsedData = BracketsParser.ParseBlock(fileData);
 
             var infoBasesNode = parsedData[2];
