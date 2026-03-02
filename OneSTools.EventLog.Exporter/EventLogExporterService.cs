@@ -34,7 +34,7 @@ namespace OneSTools.EventLog.Exporter
                 }
                 catch (Exception ex)
                 {
-                    _logger?.LogCritical(ex, "Failed to execute EventLogExporter");
+                    _logger?.LogCritical(ex, "Failed to execute EventLogExporter" + ex.ToString());
                 }
                 await Task.Delay(5000);
             }

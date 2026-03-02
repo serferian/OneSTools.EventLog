@@ -23,6 +23,7 @@ namespace OneSTools.EventLog.Exporter.Manager
 
         // ClickHouse
         private readonly string _connectionString;
+        private readonly bool _ConvertJsonToSeparateTables;
         private readonly bool _loadArchive;
         private readonly ILogger<ExportersManager> _logger;
         private readonly int _maximumRetries;
@@ -76,6 +77,7 @@ namespace OneSTools.EventLog.Exporter.Manager
                 case StorageType.ClickHouse:
                     {
                         _connectionString = configuration.GetValue("ClickHouse:ConnectionString", "");
+                        _ConvertJsonToSeparateTables = configuration.GetValue("ClickHouse:ConvertJsonToSeparateTables", false);
                         if (_connectionString == string.Empty)
                             throw new Exception("Connection string is not specified");
                         break;
@@ -195,7 +197,7 @@ namespace OneSTools.EventLog.Exporter.Manager
                                 }
                                 catch (Exception ex)
                                 {
-                                    _logger?.LogCritical(ex, "Failed to execute EventLogExporter");
+                                    _logger?.LogCritical(ex, "Failed to execute EventLogExporter reason: " + ex.ToString());
                                 }
                                 await Task.Delay(5000);
                             }
@@ -237,8 +239,10 @@ namespace OneSTools.EventLog.Exporter.Manager
                             
                         var connectionString = $"{_connectionString}Database={dataBaseName};";
                         var inMemorySettings = new Dictionary<string, string> {
-                            {"ClickHouse:ConnectionString", connectionString}
+                            {"ClickHouse:ConnectionString", connectionString},
+                            {"ClickHouse:ConvertJsonToSeparateTables", $"{_ConvertJsonToSeparateTables}"}
                         };
+                        
                         var configurationBuilder = new ConfigurationBuilder();
                         configurationBuilder.AddInMemoryCollection(inMemorySettings);
                         _configuration = configurationBuilder.Build();
