@@ -15,6 +15,7 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
     public class ClickHouseStorage : IEventLogStorage
     {
         private const string TableName = "EventLogItems";
+        private const string PositionsTableName = "EventLogPositions";
         private readonly ILogger<ClickHouseStorage> _logger;
         private ClickHouseConnection _connection;
         private string _connectionString;
@@ -91,6 +92,7 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
             await _connection.ChangeDatabaseAsync(_databaseName, cancellationToken).ConfigureAwait(false);
 
             await EnsureDefaultTableExistsAsync(cancellationToken);
+            await EnsurePositionsTableExistsAsync(cancellationToken);
         }
 
         private async Task EnsureDefaultTableExistsAsync(CancellationToken cancellationToken)
@@ -137,15 +139,39 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
             }
         }
 
+        private async Task EnsurePositionsTableExistsAsync(CancellationToken cancellationToken)
+        {
+            string commandText =
+                @"CREATE TABLE IF NOT EXISTS EventLogPositions
+                (
+                    FileName LowCardinality(String),
+                    DatabaseName LowCardinality(String),
+                    Separator LowCardinality(String),
+                    EndPosition Int64 Codec(DoubleDelta, LZ4),
+                    LgfEndPosition Int64 Codec(DoubleDelta, LZ4),
+                    Id Int64 Codec(DoubleDelta, LZ4),
+                    DateTime DateTime('UTC') Codec(Delta, LZ4)
+                )
+                ENGINE = ReplacingMergeTree()
+                ORDER BY (Separator, DatabaseName)
+                SETTINGS index_granularity = 8192;";
+
+            using (var cmd = _connection.CreateCommand())
+            {
+                cmd.CommandText = commandText;
+                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+
         public async Task<EventLogPosition> ReadEventLogPositionAsync(CancellationToken cancellationToken = default(CancellationToken))
         {
             await CreateConnectionAsync(cancellationToken).ConfigureAwait(false);
 
             var commandText = string.Format(
-                @"SELECT TOP 1 FileName, EndPosition, LgfEndPosition, Id
-                FROM {0} 
-                WHERE Separator = '{1}' and DatabaseName = '{2}'
-                ORDER BY DateTime DESC, EndPosition DESC", TableName, _machineName, _databaseName1C);
+                @"SELECT FileName, EndPosition, LgfEndPosition, Id
+                FROM {0} FINAL
+                WHERE Separator = '{1}' AND DatabaseName = '{2}'
+                LIMIT 1", PositionsTableName, _machineName, _databaseName1C);
             _logger?.LogDebug($"{commandText} will be recorded");
 
             using (var cmd = _connection.CreateCommand())
@@ -260,6 +286,39 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
 
                 _logger?.LogDebug($"{defaultEvents.Count} items were being written to {_databaseName}");
             }
+
+            var lastItem = entities
+                .OrderByDescending(e => e.DateTime)
+                .ThenByDescending(e => e.EndPosition)
+                .FirstOrDefault();
+            if (lastItem != null)
+                await WriteEventLogPositionAsync(lastItem, cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task WriteEventLogPositionAsync(EventLogItem item, CancellationToken cancellationToken)
+        {
+            using var copy = new ClickHouseBulkCopy(_connection)
+            {
+                DestinationTableName = PositionsTableName,
+                BatchSize = 1
+            };
+            var data = new[]
+            {
+                new object[]
+                {
+                    item.FileName ?? "",
+                    _databaseName1C,
+                    _machineName,
+                    item.EndPosition,
+                    item.LgfEndPosition,
+                    item.Id,
+                    item.DateTime
+                }
+            };
+            await ExecuteWithRetriesAsync(async () =>
+            {
+                await copy.WriteToServerAsync(data, cancellationToken);
+            });
         }
 
         // Метод bulk-insert для динамической таблицы
