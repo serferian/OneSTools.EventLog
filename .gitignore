@@ -4,6 +4,8 @@
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
 .vscode/
+.zencoder/
+.zenflow/
 
 # Project-specific files
 log.txt
