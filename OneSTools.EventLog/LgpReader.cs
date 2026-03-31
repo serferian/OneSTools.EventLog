@@ -1,29 +1,33 @@
 ﻿using System;
 using System.Globalization;
 using System.IO;
-using System.Text;
 using System.Threading;
+using Microsoft.Extensions.Logging;
 using NodaTime;
-using OneSTools.BracketsFile;
 
 namespace OneSTools.EventLog
 {
     internal class LgpReader : IDisposable
     {
+        private readonly ILogger _logger;
+        private readonly int _maxDataLength;
         private readonly DateTimeZone _timeZone;
-        private BracketsListReader _bracketsReader;
+        private LgpStreamingReader _lgpStreamingReader;
         private bool _disposedValue;
         private FileStream _fileStream;
         private LgfReader _lgfReader;
         private FileSystemWatcher _lgpFileWatcher;
         private DateTime _skipEventsBeforeDate;
 
-        public LgpReader(string lgpPath, DateTimeZone timeZone, LgfReader lgfReader, DateTime skipEventsBeforeDate)
+        public LgpReader(string lgpPath, DateTimeZone timeZone, LgfReader lgfReader, DateTime skipEventsBeforeDate,
+            int maxDataLength = 0, ILogger logger = null)
         {
             LgpPath = lgpPath;
             _timeZone = timeZone;
             _lgfReader = lgfReader;
             _skipEventsBeforeDate = skipEventsBeforeDate;
+            _maxDataLength = maxDataLength;
+            _logger = logger;
         }
 
         public string LgpPath { get; }
@@ -49,7 +53,7 @@ namespace OneSTools.EventLog
         {
             InitializeStreams();
 
-            _bracketsReader.Position = position;
+            _lgpStreamingReader.Position = position;
         }
 
         private void InitializeStreams()
@@ -69,7 +73,7 @@ namespace OneSTools.EventLog
 
                 _fileStream = new FileStream(LgpPath, FileMode.Open, FileAccess.Read,
                     FileShare.ReadWrite | FileShare.Delete);
-                _bracketsReader = new BracketsListReader(_fileStream);
+                _lgpStreamingReader = new LgpStreamingReader(_fileStream, LgpPath, _logger);
             }
         }
 
@@ -78,11 +82,10 @@ namespace OneSTools.EventLog
             if (e.ChangeType == WatcherChangeTypes.Deleted && LgpPath == e.FullPath) Dispose();
         }
 
-        private (StringBuilder Data, long EndPosition) ReadNextEventLogItemData()
+        private (LgpEventData Data, long EndPosition) ReadNextEventLogItemData()
         {
-            var data = _bracketsReader.NextNodeAsStringBuilder();
-
-            return (data, _bracketsReader.Position);
+            var data = _lgpStreamingReader.NextItem(_maxDataLength);
+            return (data, _lgpStreamingReader.Position);
         }
 
         private EventLogItem ReadEventLogItemData(CancellationToken cancellationToken = default)
@@ -90,7 +93,7 @@ namespace OneSTools.EventLog
             while (true)
             {
                 var (data, endPosition) = ReadNextEventLogItemData();
-                if (data.Length == 0)
+                if (data == null)
                     return null;
 
                 var eventLogItem = ParseEventLogItemData(data, endPosition, cancellationToken);
@@ -99,15 +102,13 @@ namespace OneSTools.EventLog
             }
         }
 
-        private EventLogItem ParseEventLogItemData(StringBuilder eventLogItemData, long endPosition,
+        private EventLogItem ParseEventLogItemData(LgpEventData parsedData, long endPosition,
             CancellationToken cancellationToken = default)
         {
-            var parsedData = BracketsParser.ParseBlock(eventLogItemData);
-
             DateTime dateTime = default;
             try
             {
-                dateTime = _timeZone.ToUtc(DateTime.ParseExact(parsedData[0], "yyyyMMddHHmmss",
+                dateTime = _timeZone.ToUtc(DateTime.ParseExact(parsedData.DateTime, "yyyyMMddHHmmss",
                     CultureInfo.InvariantCulture));
             }
             catch
@@ -121,102 +122,55 @@ namespace OneSTools.EventLog
             var eventLogItem = new EventLogItem
             {
                 DateTime = dateTime,
-                TransactionStatus = GetTransactionPresentation(parsedData[1]),
+                TransactionStatus = GetTransactionPresentation(parsedData.TransactionStatus),
                 FileName = LgpFileName,
                 EndPosition = endPosition,
                 LgfEndPosition = _lgfReader.GetPosition()
             };
 
-            var transactionData = parsedData[2];
-            eventLogItem.TransactionNumber = Convert.ToInt64(transactionData[1], 16);
+            eventLogItem.TransactionNumber = Convert.ToInt64(parsedData.TransactionNumberHex, 16);
 
-            var transactionDate = new DateTime().AddSeconds(Convert.ToInt64(transactionData[0], 16) / 10000);
+            var transactionDate = new DateTime().AddSeconds(Convert.ToInt64(parsedData.TransactionDateHex, 16) / 10000);
             eventLogItem.TransactionDateTime = transactionDate == DateTime.MinValue
                 ? transactionDate
                 : _timeZone.ToUtc(transactionDate);
 
-            var (value, uuid) = _lgfReader.GetReferencedObjectValue(ObjectType.Users, parsedData[3], cancellationToken);
+            var (value, uuid) = _lgfReader.GetReferencedObjectValue(ObjectType.Users, parsedData.User, cancellationToken);
             eventLogItem.UserUuid = uuid;
             eventLogItem.User = value;
 
-            eventLogItem.Computer = _lgfReader.GetObjectValue(ObjectType.Computers, parsedData[4], cancellationToken);
+            eventLogItem.Computer = _lgfReader.GetObjectValue(ObjectType.Computers, parsedData.Computer, cancellationToken);
 
-            var application = _lgfReader.GetObjectValue(ObjectType.Applications, parsedData[5], cancellationToken);
+            var application = _lgfReader.GetObjectValue(ObjectType.Applications, parsedData.Application, cancellationToken);
             eventLogItem.Application = GetApplicationPresentation(application);
 
-            eventLogItem.Connection = parsedData[6];
+            eventLogItem.Connection = parsedData.Connection;
 
-            var ev = _lgfReader.GetObjectValue(ObjectType.Events, parsedData[7], cancellationToken);
+            var ev = _lgfReader.GetObjectValue(ObjectType.Events, parsedData.Event, cancellationToken);
             eventLogItem.Event = GetEventPresentation(ev);
 
-            var severity = (string)parsedData[8];
-            eventLogItem.Severity = GetSeverityPresentation(severity);
+            eventLogItem.Severity = GetSeverityPresentation(parsedData.Severity);
+            eventLogItem.Comment = parsedData.Comment;
 
-            eventLogItem.Comment = parsedData[9];
-
-            (value, uuid) = _lgfReader.GetReferencedObjectValue(ObjectType.Metadata, parsedData[10], cancellationToken);
+            (value, uuid) = _lgfReader.GetReferencedObjectValue(ObjectType.Metadata, parsedData.Metadata, cancellationToken);
             eventLogItem.MetadataUuid = uuid;
             eventLogItem.Metadata = value;
 
-            eventLogItem.Data = GetData(parsedData[11]).Trim();
-            eventLogItem.DataPresentation = parsedData[12];
-            eventLogItem.Server = _lgfReader.GetObjectValue(ObjectType.Servers, parsedData[13], cancellationToken);
+            eventLogItem.Data = parsedData.Data.Trim();
+            eventLogItem.DataPresentation = parsedData.DataPresentation;
+            eventLogItem.Server = _lgfReader.GetObjectValue(ObjectType.Servers, parsedData.Server, cancellationToken);
 
-            var mainPort = _lgfReader.GetObjectValue(ObjectType.MainPorts, parsedData[14], cancellationToken);
+            var mainPort = _lgfReader.GetObjectValue(ObjectType.MainPorts, parsedData.MainPort, cancellationToken);
             if (mainPort != "")
                 eventLogItem.MainPort = int.Parse(mainPort);
 
-            var addPort = _lgfReader.GetObjectValue(ObjectType.AddPorts, parsedData[15], cancellationToken);
+            var addPort = _lgfReader.GetObjectValue(ObjectType.AddPorts, parsedData.AddPort, cancellationToken);
             if (addPort != "")
                 eventLogItem.AddPort = int.Parse(addPort);
 
-            eventLogItem.Session = parsedData[16];
+            eventLogItem.Session = parsedData.Session;
 
             return eventLogItem;
-        }
-
-        private static string GetData(BracketsNode node)
-        {
-            var dataType = (string)node[0];
-
-            switch (dataType)
-            {
-                case "R": // Reference
-                    return node[1];
-                case "U": // Undefined
-                    return "";
-                case "S": // String
-                    return node[1];
-                case "B": // Boolean
-                    return (string)node[1] == "0" ? "false" : "true";
-                case "P": // Complex data
-                    var str = new StringBuilder();
-
-                    var subDataNode = node[1];
-
-                    //var subDataType = (int)subDataNode[0];
-                    // What's known (subDataNode):
-                    // 1 - additional data of "Authentication (Windows auth) in thin or thick client"
-                    // 2 - additional data of "Authentication in COM connection" event
-                    // 6 - additional data of "Authentication in thin or thick client" event
-                    // 11 - additional data of "Access denied" event
-
-                    // I hope this is temporarily method
-                    var subDataCount = subDataNode.Count - 1;
-
-                    if (subDataCount > 0)
-                        for (var i = 1; i <= subDataCount; i++)
-                        {
-                            var value = GetData(subDataNode[i]);
-
-                            if (value != string.Empty)
-                                str.AppendLine($"Item {i}: {value}");
-                        }
-
-                    return str.ToString();
-                default:
-                    return "";
-            }
         }
 
         private static string GetTransactionPresentation(string str)
@@ -372,8 +326,8 @@ namespace OneSTools.EventLog
         {
             if (_disposedValue) return;
 
-            _bracketsReader?.Dispose();
-            _bracketsReader = null;
+            _lgpStreamingReader?.Dispose();
+            _lgpStreamingReader = null;
             _fileStream = null;
 
             _lgpFileWatcher?.Dispose();

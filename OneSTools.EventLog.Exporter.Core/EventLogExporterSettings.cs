@@ -11,6 +11,7 @@ namespace OneSTools.EventLog.Exporter.Core
         public int WritingMaxDop { get; set; } = 1;
         public int CollectedFactor { get; set; } = 2;
         public int ReadingTimeout { get; set; } = 1;
+        public int MaxDataLength { get; set; } = 0;
         public bool LoadArchive { get; set; } = false;
         public DateTime SkipEventsBeforeDate { get; set; }
         /// <summary>

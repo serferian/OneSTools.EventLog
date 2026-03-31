@@ -18,6 +18,7 @@ namespace OneSTools.EventLog.Exporter.Core
         // Exporter settings
         private readonly string _logFolder;
         private readonly ILogger<EventLogExporter> _logger;
+        private readonly int _maxDataLength;
         private readonly int _portion;
         private readonly int _readingTimeout;
         private readonly IEventLogStorage _storage;
@@ -48,6 +49,7 @@ namespace OneSTools.EventLog.Exporter.Core
             _loadArchive = settings.LoadArchive;
             _timeZone = settings.TimeZone;
             _readingTimeout = settings.ReadingTimeout;
+            _maxDataLength = settings.MaxDataLength;
             _skipEventsBeforeDate = settings.SkipEventsBeforeDate;
             _LogFilesStoringDays = settings.LogFilesStoringDays;
 
@@ -65,6 +67,7 @@ namespace OneSTools.EventLog.Exporter.Core
             _collectedFactor = configuration.GetValue("Exporter:CollectedFactor", 2);
             _loadArchive = configuration.GetValue("Exporter:LoadArchive", false);
             _readingTimeout = configuration.GetValue("Exporter:ReadingTimeout", 1);
+            _maxDataLength = configuration.GetValue("Exporter:MaxDataLength", 0);
             _skipEventsBeforeDate = configuration.GetValue("Exporter:SkipEventsBeforeDate", DateTime.MinValue);
             _LogFilesStoringDays = configuration.GetValue("Exporter:LogFilesStoringDays", 0);
 
@@ -198,6 +201,7 @@ namespace OneSTools.EventLog.Exporter.Core
                 LogFolder = _logFolder,
                 LiveMode = true,
                 ReadingTimeout = _readingTimeout * 1000,
+                MaxDataLength = _maxDataLength,
                 TimeZone = _timeZone,
                 SkipEventsBeforeDate = _skipEventsBeforeDate
             };
