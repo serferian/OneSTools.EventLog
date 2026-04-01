@@ -1,13 +1,14 @@
 using System;
 using System.Globalization;
 using System.IO;
-using System.Text;
 using Microsoft.Extensions.Logging;
 
 namespace OneSTools.EventLog
 {
     internal sealed class LgpStreamingReader : IDisposable
     {
+        private const int DefaultMaxCommentLength = 1024 * 1024;
+
         private readonly ILogger _logger;
         private readonly string _sourceName;
         private readonly StreamReader _stream;
@@ -37,7 +38,7 @@ namespace OneSTools.EventLog
                 if (!MoveToNextNodeStart())
                     return null;
 
-                return ReadItem(maxDataLength > 0 ? maxDataLength : int.MaxValue);
+                return ReadItem(maxDataLength > 0 ? maxDataLength : DefaultMaxCommentLength);
             }
             catch (IncompleteNodeException)
             {
@@ -173,44 +174,6 @@ namespace OneSTools.EventLog
                 default:
                     SkipRemainingNodeValues();
                     return string.Empty;
-            }
-        }
-
-        private string ReadComplexData()
-        {
-            Consume('{');
-
-            if (TryConsume('}'))
-                return string.Empty;
-
-            var builder = new StringBuilder();
-            var index = 0;
-
-            while (true)
-            {
-                if (index == 0)
-                {
-                    SkipValue();
-                }
-                else
-                {
-                    var value = ReadDataValue();
-                    if (value != string.Empty)
-                    {
-                        builder.Append("Item ");
-                        builder.Append(index.ToString(CultureInfo.InvariantCulture));
-                        builder.Append(": ");
-                        builder.Append(value);
-                        builder.Append(Environment.NewLine);
-                    }
-                }
-
-                index++;
-
-                if (TryConsume('}'))
-                    return builder.ToString();
-
-                Consume(',');
             }
         }
 
@@ -378,7 +341,7 @@ namespace OneSTools.EventLog
 
         private string ReadQuotedValue(int maxLength)
         {
-            var builder = maxLength > 0 ? new StringBuilder(Math.Min(maxLength, 256)) : null;
+            var buffer = new LimitedCharBuffer(maxLength, 256);
             var quotes = 1;
 
             while (true)
@@ -390,27 +353,25 @@ namespace OneSTools.EventLog
 
                     var next = PeekRequired();
                     if ((next == ',' || next == '}') && quotes % 2 == 0)
-                        return builder?.ToString() ?? string.Empty;
+                        return buffer.ToString();
                 }
 
-                if (builder != null && builder.Length < maxLength)
-                    builder.Append(value);
+                buffer.Append(value);
             }
         }
 
         private string ReadBareValue(int maxLength)
         {
-            var builder = maxLength > 0 ? new StringBuilder(Math.Min(maxLength, 64)) : null;
+            var buffer = new LimitedCharBuffer(maxLength, 64);
 
             while (true)
             {
                 var next = PeekRequired();
                 if (next == ',' || next == '}' || char.IsWhiteSpace((char)next))
-                    return builder?.ToString() ?? string.Empty;
+                    return buffer.ToString();
 
                 var value = ReadRequired();
-                if (builder != null && builder.Length < maxLength)
-                    builder.Append(value);
+                buffer.Append(value);
             }
         }
 
@@ -516,43 +477,45 @@ namespace OneSTools.EventLog
         {
         }
 
-        private sealed class LimitedStringBuilder
+        private sealed class LimitedCharBuffer
         {
-            private readonly StringBuilder _builder;
+            private char[] _buffer;
             private readonly int _maxLength;
+            private int _length;
 
-            public LimitedStringBuilder(int maxLength)
+            public LimitedCharBuffer(int maxLength, int initialCapacity)
             {
-                _maxLength = maxLength;
-                _builder = maxLength > 0 ? new StringBuilder(Math.Min(maxLength, 256)) : new StringBuilder();
+                _maxLength = Math.Max(maxLength, 0);
+                _buffer = _maxLength == 0 ? Array.Empty<char>() : new char[Math.Min(_maxLength, Math.Max(initialCapacity, 1))];
             }
 
-            public int RemainingLength => _maxLength == int.MaxValue ? int.MaxValue : Math.Max(_maxLength - _builder.Length, 0);
-
-            public void Append(string value)
+            public void Append(char value)
             {
-                if (string.IsNullOrEmpty(value))
+                if (_length >= _maxLength)
                     return;
 
-                if (_maxLength == int.MaxValue)
-                {
-                    _builder.Append(value);
-                    return;
-                }
-
-                var remaining = RemainingLength;
-                if (remaining == 0)
-                    return;
-
-                if (value.Length <= remaining)
-                    _builder.Append(value);
-                else
-                    _builder.Append(value, 0, remaining);
+                EnsureCapacity(_length + 1);
+                _buffer[_length] = value;
+                _length++;
             }
 
             public override string ToString()
             {
-                return _builder.ToString();
+                return _length == 0 ? string.Empty : new string(_buffer, 0, _length);
+            }
+
+            private void EnsureCapacity(int requiredLength)
+            {
+                if (_buffer.Length >= requiredLength)
+                    return;
+
+                var newCapacity = _buffer.Length == 0 ? 1 : _buffer.Length * 2;
+                if (newCapacity < requiredLength)
+                    newCapacity = requiredLength;
+                if (newCapacity > _maxLength)
+                    newCapacity = _maxLength;
+
+                Array.Resize(ref _buffer, newCapacity);
             }
         }
     }
