@@ -36,7 +36,8 @@ namespace OneSTools.EventLog
             {
                 var file = Path.Combine(_settings.LogFolder, settings.LgpFileName);
 
-                _lgpReader = new LgpReader(file, settings.TimeZone, _lgfReader, settings.SkipEventsBeforeDate);
+                _lgpReader = new LgpReader(file, settings.TimeZone, _lgfReader, settings.SkipEventsBeforeDate,
+                    settings.MaxDataLength, _logger);
                 _lgpReader.SetPosition(settings.LgpStartPosition);
             }
         }
@@ -162,7 +163,8 @@ namespace OneSTools.EventLog
 
             _logger?.LogDebug($"Portion per request: {item1}");
 
-            _lgpReader = new LgpReader(item1, _settings.TimeZone, _lgfReader, _settings.SkipEventsBeforeDate);
+            _lgpReader = new LgpReader(item1, _settings.TimeZone, _lgfReader, _settings.SkipEventsBeforeDate,
+                _settings.MaxDataLength, _logger);
 
             return true;
         }

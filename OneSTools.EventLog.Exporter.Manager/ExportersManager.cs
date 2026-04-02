@@ -34,6 +34,7 @@ namespace OneSTools.EventLog.Exporter.Manager
         private readonly List<ElasticSearchNode> _nodes;
         private readonly int _portion;
         private readonly int _readingTimeout;
+        private readonly int _maxDataLength;
         private readonly Dictionary<string, CancellationTokenSource> _runExporters = new();
         private readonly string _separation;
 
@@ -61,6 +62,7 @@ namespace OneSTools.EventLog.Exporter.Manager
             _collectedFactor = configuration.GetValue("Exporter:CollectedFactor", 2);
             _loadArchive = configuration.GetValue("Exporter:LoadArchive", false);
             _readingTimeout = configuration.GetValue("Exporter:ReadingTimeout", 1);
+            _maxDataLength = configuration.GetValue("Exporter:MaxDataLength", 0);
             _skipEventsBeforeDate = configuration.GetValue("Exporter:SkipEventsBeforeDate", DateTime.MinValue);
             _LogFilesStoringDays = configuration.GetValue("Exporter:LogFilesStoringDays", 0);
 
@@ -176,6 +178,7 @@ namespace OneSTools.EventLog.Exporter.Manager
                             LoadArchive = _loadArchive,
                             Portion = _portion,
                             ReadingTimeout = _readingTimeout,
+                            MaxDataLength = _maxDataLength,
                             TimeZone = _timeZone,
                             WritingMaxDop = _writingMaxDop,
                             SkipEventsBeforeDate = _skipEventsBeforeDate,
@@ -198,6 +201,8 @@ namespace OneSTools.EventLog.Exporter.Manager
                                 catch (Exception ex)
                                 {
                                     _logger?.LogCritical(ex, "Failed to execute EventLogExporter reason: " + ex.ToString());
+                                    if (_storageType == StorageType.ClickHouse)
+                                        _logger?.LogWarning($"ClickHouse is unavailable for \"{name}\" information base. Waiting for connection recovery and retrying export in 5 seconds.");
                                 }
                                 await Task.Delay(5000);
                             }

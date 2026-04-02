@@ -13,6 +13,7 @@ namespace OneSTools.EventLog
         public long LgfStartPosition { get; set; } = 0;
         public long ItemId { get; set; } = 0;
         public int ReadingTimeout { get; set; } = Timeout.Infinite;
+        public int MaxDataLength { get; set; } = 0;
         public DateTimeZone TimeZone { get; set; } = DateTimeZoneProviders.Tzdb.GetSystemDefault();
         public DateTime SkipEventsBeforeDate { get; set; }
     }

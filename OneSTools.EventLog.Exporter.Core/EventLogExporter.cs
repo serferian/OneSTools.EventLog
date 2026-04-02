@@ -18,6 +18,7 @@ namespace OneSTools.EventLog.Exporter.Core
         // Exporter settings
         private readonly string _logFolder;
         private readonly ILogger<EventLogExporter> _logger;
+        private readonly int _maxDataLength;
         private readonly int _portion;
         private readonly int _readingTimeout;
         private readonly IEventLogStorage _storage;
@@ -48,6 +49,7 @@ namespace OneSTools.EventLog.Exporter.Core
             _loadArchive = settings.LoadArchive;
             _timeZone = settings.TimeZone;
             _readingTimeout = settings.ReadingTimeout;
+            _maxDataLength = settings.MaxDataLength;
             _skipEventsBeforeDate = settings.SkipEventsBeforeDate;
             _LogFilesStoringDays = settings.LogFilesStoringDays;
 
@@ -65,6 +67,7 @@ namespace OneSTools.EventLog.Exporter.Core
             _collectedFactor = configuration.GetValue("Exporter:CollectedFactor", 2);
             _loadArchive = configuration.GetValue("Exporter:LoadArchive", false);
             _readingTimeout = configuration.GetValue("Exporter:ReadingTimeout", 1);
+            _maxDataLength = configuration.GetValue("Exporter:MaxDataLength", 0);
             _skipEventsBeforeDate = configuration.GetValue("Exporter:SkipEventsBeforeDate", DateTime.MinValue);
             _LogFilesStoringDays = configuration.GetValue("Exporter:LogFilesStoringDays", 0);
 
@@ -178,10 +181,9 @@ namespace OneSTools.EventLog.Exporter.Core
                 {
                     await _storage.WriteEventLogDataAsync(c.ToList(), cancellationToken);
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
-                    _batchBlock.Complete();
-                    _writeBlock.Complete();
+                    ((IDataflowBlock)_batchBlock).Fault(ex);
                     throw;
                 }
             },
@@ -198,6 +200,7 @@ namespace OneSTools.EventLog.Exporter.Core
                 LogFolder = _logFolder,
                 LiveMode = true,
                 ReadingTimeout = _readingTimeout * 1000,
+                MaxDataLength = _maxDataLength,
                 TimeZone = _timeZone,
                 SkipEventsBeforeDate = _skipEventsBeforeDate
             };
@@ -245,9 +248,14 @@ namespace OneSTools.EventLog.Exporter.Core
         private static async Task SendAsync(ITargetBlock<EventLogItem> nextBlock, EventLogItem item,
             CancellationToken stoppingToken = default)
         {
-            while (!stoppingToken.IsCancellationRequested && !nextBlock.Completion.IsCompleted)
+            while (!stoppingToken.IsCancellationRequested)
+            {
                 if (await nextBlock.SendAsync(item, stoppingToken))
-                    break;
+                    return;
+
+                await nextBlock.Completion;
+                throw new InvalidOperationException("The target block has stopped accepting messages.");
+            }
         }
 
         protected virtual void Dispose(bool disposing)
