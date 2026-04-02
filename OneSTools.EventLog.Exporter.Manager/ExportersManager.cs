@@ -201,6 +201,8 @@ namespace OneSTools.EventLog.Exporter.Manager
                                 catch (Exception ex)
                                 {
                                     _logger?.LogCritical(ex, "Failed to execute EventLogExporter reason: " + ex.ToString());
+                                    if (_storageType == StorageType.ClickHouse)
+                                        _logger?.LogWarning($"ClickHouse is unavailable for \"{name}\" information base. Waiting for connection recovery and retrying export in 5 seconds.");
                                 }
                                 await Task.Delay(5000);
                             }

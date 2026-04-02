@@ -181,10 +181,9 @@ namespace OneSTools.EventLog.Exporter.Core
                 {
                     await _storage.WriteEventLogDataAsync(c.ToList(), cancellationToken);
                 }
-                catch (Exception)
+                catch (Exception ex)
                 {
-                    _batchBlock.Complete();
-                    _writeBlock.Complete();
+                    ((IDataflowBlock)_batchBlock).Fault(ex);
                     throw;
                 }
             },
@@ -249,9 +248,14 @@ namespace OneSTools.EventLog.Exporter.Core
         private static async Task SendAsync(ITargetBlock<EventLogItem> nextBlock, EventLogItem item,
             CancellationToken stoppingToken = default)
         {
-            while (!stoppingToken.IsCancellationRequested && !nextBlock.Completion.IsCompleted)
+            while (!stoppingToken.IsCancellationRequested)
+            {
                 if (await nextBlock.SendAsync(item, stoppingToken))
-                    break;
+                    return;
+
+                await nextBlock.Completion;
+                throw new InvalidOperationException("The target block has stopped accepting messages.");
+            }
         }
 
         protected virtual void Dispose(bool disposing)

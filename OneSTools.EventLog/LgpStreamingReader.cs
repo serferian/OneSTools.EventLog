@@ -48,7 +48,7 @@ namespace OneSTools.EventLog
             catch (FormatException ex)
             {
                 var failedPosition = Position;
-                var context = TryReadContext(startPosition);
+                var context = TryReadContext(failedPosition);
                 _logger?.LogWarning(ex,
                     "Failed to parse LGP block in {SourceName}. StartPosition={StartPosition}, FailedPosition={FailedPosition}, Context={Context}",
                     _sourceName, startPosition, failedPosition, context);
@@ -153,6 +153,7 @@ namespace OneSTools.EventLog
                         return value;
                     }
                 case "U":
+                    SkipValue();
                     SkipRemainingNodeValues();
                     return string.Empty;
                 case "S":
@@ -172,6 +173,7 @@ namespace OneSTools.EventLog
                     SkipRemainingNodeValues();
                     return string.Empty;
                 default:
+                    SkipValue();
                     SkipRemainingNodeValues();
                     return string.Empty;
             }
@@ -228,18 +230,20 @@ namespace OneSTools.EventLog
 
         private void SkipQuotedValue()
         {
-            var quotes = 1;
-
             while (true)
             {
                 var value = ReadRequired();
                 if (value != '"')
                     continue;
 
-                quotes++;
-
                 var next = PeekRequired();
-                if ((next == ',' || next == '}') && quotes % 2 == 0)
+                if (next == '"')
+                {
+                    ReadRequired();
+                    continue;
+                }
+
+                if (next == ',' || next == '}')
                     return;
             }
         }
@@ -342,21 +346,28 @@ namespace OneSTools.EventLog
         private string ReadQuotedValue(int maxLength)
         {
             var buffer = new LimitedCharBuffer(maxLength, 256);
-            var quotes = 1;
 
             while (true)
             {
                 var value = ReadRequired();
-                if (value == '"')
+                if (value != '"')
                 {
-                    quotes++;
-
-                    var next = PeekRequired();
-                    if ((next == ',' || next == '}') && quotes % 2 == 0)
-                        return buffer.ToString();
+                    buffer.Append(value);
+                    continue;
                 }
 
-                buffer.Append(value);
+                var next = PeekRequired();
+                if (next == '"')
+                {
+                    ReadRequired();
+                    buffer.Append('"');
+                    continue;
+                }
+
+                if (next == ',' || next == '}')
+                    return buffer.ToString();
+
+                buffer.Append('"');
             }
         }
 
