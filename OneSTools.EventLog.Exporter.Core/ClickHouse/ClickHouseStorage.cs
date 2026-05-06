@@ -514,8 +514,7 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                 return false;
             try
             {
-
-                var obj = JObject.Parse(comment.Replace(@"""""", @""""));
+                var obj = JObject.Parse(comment);
                 var props = obj.Properties().ToList();
                 if (props.Count == 1)
                 {
@@ -541,7 +540,9 @@ namespace OneSTools.EventLog.Exporter.Core.ClickHouse
                     }
                 }
             }
-            catch { }
+            catch
+            {
+            }
             return false;
         }
 
