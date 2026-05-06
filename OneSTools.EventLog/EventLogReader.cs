@@ -74,6 +74,29 @@ namespace OneSTools.EventLog
             {
                 try
                 {
+                    if (_lgpReader == null)
+                    {
+                        var newReader = SetNextLgpReader();
+                        if (!newReader)
+                        {
+                            if (_settings.LiveMode)
+                            {
+                                _lgpChangedCreated.Reset();
+
+                                var waitHandle = WaitHandle.WaitAny(
+                                    new[] { _lgpChangedCreated, cancellationToken.WaitHandle }, _settings.ReadingTimeout);
+
+                                if (_settings.ReadingTimeout != Timeout.Infinite && waitHandle == WaitHandle.WaitTimeout)
+                                    throw new EventLogReaderTimeoutException();
+
+                                _lgpChangedCreated.Reset();
+                                continue;
+                            }
+
+                            return null;
+                        }
+                    }
+
                     item = _lgpReader.ReadNextEventLogItem(cancellationToken);
                 }
                 catch (ObjectDisposedException)

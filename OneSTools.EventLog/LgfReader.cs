@@ -47,8 +47,23 @@ namespace OneSTools.EventLog
             while (!stop && !_bracketsReader.EndOfStream && !cancellationToken.IsCancellationRequested)
             {
                 var itemData = _bracketsReader.NextNode();
+                if (itemData == null)
+                {
+                    // When the LGF is being written concurrently, the reader may not be able to parse the next node yet
+                    // (or may return null for incomplete/corrupted tail). Do not crash; just stop at the current position.
+                    break;
+                }
 
-                var ot = (ObjectType) (int) itemData[0];
+                ObjectType ot;
+                try
+                {
+                    ot = (ObjectType)(int)itemData[0];
+                }
+                catch
+                {
+                    // Unexpected node format
+                    continue;
+                }
 
                 // Skip unknown object types
                 if (ot >= ObjectType.Unknown)
@@ -58,8 +73,17 @@ namespace OneSTools.EventLog
                 {
                     case ObjectType.Users:
                     case ObjectType.Metadata:
-                        var key = (ot, (int) itemData[3]);
-                        var value = ((string) itemData[2], (string) itemData[1]);
+                        (ObjectType, int) key;
+                        (string, string) value;
+                        try
+                        {
+                            key = (ot, (int)itemData[3]);
+                            value = ((string)itemData[2], (string)itemData[1]);
+                        }
+                        catch
+                        {
+                            continue;
+                        }
 
                         if (_referencedObjects.ContainsKey(key))
                             _referencedObjects.Remove(key);
@@ -77,8 +101,17 @@ namespace OneSTools.EventLog
 
                         break;
                     default:
-                        var key1 = (ot, (int) itemData[2]);
-                        var value1 = (string) itemData[1];
+                        (ObjectType, int) key1;
+                        string value1;
+                        try
+                        {
+                            key1 = (ot, (int)itemData[2]);
+                            value1 = (string)itemData[1];
+                        }
+                        catch
+                        {
+                            continue;
+                        }
 
                         if (_objects.ContainsKey(key1))
                             _objects.Remove(key1);
